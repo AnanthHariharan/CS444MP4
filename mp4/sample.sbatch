@@ -15,9 +15,7 @@
 #SBATCH --mail-type=NONE                        # Type of email notifications to send
 
 #SBATCH --output=cs444mp4.out.%j                # Default name of batch job
-# 					        # output file if not set on command line
-#SBATCH --error=cs444mp4.err.%j                 # Default name of batch job
-# 					        # error file if not set on command line
+#SBATCH --error=cs444mp4.err.%j                 # Default name of batch job error file if not set on command line
 
 ###############################################################################
 # Change to the directory from which the batch job was submitted
@@ -26,9 +24,9 @@
 cd ${SLURM_SUBMIT_DIR}
 ###############################################################################
 
-echo "Runnng on `hostname`"
+echo "Running on `hostname`"
 
-# Load Python/Anaconda module (Enable Python in batch job environment)
+# Load required modules
 module load git/2.19.0 python/3.9.16 cuda/12.4
 
 # Activate virtual environment
@@ -37,16 +35,12 @@ source /projects/illinois/class/cs444/saurabhg/fa2024/mp3/venv/bin/activate
 nvidia-smi
 export PYTHONUNBUFFERED=1
 
-# This creates output directory for every run. Change OUTPUT_DIR while
-# performing each run and ablation experiment
-
-# Assign a default value of runs/run1 to 'OUTPUT_DIR' only if not set on
-# command line already. For each different experiment you run, you should use a
-# different OUTPUT_DIR. Change it in the command line flag.
+# Set a default output directory
 OUTPUT_DIR=${OUTPUT_DIR:="runs/run1"}
 mkdir -p ${OUTPUT_DIR}
 
+# Log file path
 LOG_FILE="${OUTPUT_DIR}/log.txt"
 
-
-python demo_flower.py --exp_name vit_linear --output_dir ${OUTPUT_DIR} --encoder vit_b_32 --data_dir /projects/illinois/class/cs444/saurabhg/fa2024/mp4/flower-dataset-reduced 2>&1 | tee ${LOG_FILE}
+# Run the Python script
+python script.py --output_dir ${OUTPUT_DIR} 2>&1 | tee ${LOG_FILE}
