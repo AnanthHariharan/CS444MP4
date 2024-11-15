@@ -57,7 +57,7 @@ def main(_):
 
     writer = SummaryWriter(log_dir=f'{dir_name}/lr{lr:0.6f}_wd{wd:0.6f}', flush_secs=10)
     
-    model = net_class(num_classes=102, encoder=FLAGS.encoder)
+    model = net_class(encoder=FLAGS.encoder)
     model.to(device)
 
     trainer = Trainer(
