@@ -1,82 +1,101 @@
+import os
 import torch
-from absl import app, flags
+import torch.nn as nn
+import torch.optim as optim
+from torchvision import datasets, transforms
 from torch.utils.data import DataLoader
-from tensorboardX import SummaryWriter
-from finetune import ViTLinear, inference, Trainer
-import yaml
+from torch.utils.tensorboard import SummaryWriter
 
-from datasets import get_flower102
+# Device configuration
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+# Hyperparameters
+batch_size = 64
+learning_rate = 0.001
+num_epochs = 10
 
-FLAGS = flags.FLAGS
-flags.DEFINE_string('exp_name', 'vit_linear',
-                    'The experiment with corresponding hyperparameters to run. See config.yaml')
-flags.DEFINE_string('output_dir', 'run1', 'Output Directory')
-flags.DEFINE_string('encoder', 'vit_b_32',
-                    'Select the encoder from linear, resnet18, resnet50, vit_b_16, vit_b_32')
-flags.DEFINE_string('data_dir', './flower-dataset-reduced', 'Directory with coco data')
+# Output directory for logs and predictions
+output_dir = os.getenv('OUTPUT_DIR', 'runs/default_run')
+os.makedirs(output_dir, exist_ok=True)
 
-def get_config(exp_name, encoder):
-    dir_name = f'{FLAGS.output_dir}/runs-{encoder}-flower102/demo-{exp_name}'
+# TensorBoard writer
+writer = SummaryWriter(output_dir)
 
-    encoder_registry = {
-        'ViTLinear': ViTLinear,
-    }
-    with open("config.yaml", "r") as f:
-        config = yaml.safe_load(f)[exp_name]
+# Data transforms
+transform = transforms.Compose([
+    transforms.ToTensor(),
+    transforms.Normalize((0.5,), (0.5,))
+])
 
-    lr = config['lr']
-    wd = config['wd']
-    epochs = config['epochs']
-    optimizer = config['optimizer']
-    scheduler = config['scheduler']
-    momentum = config['momentum']
-    net_class = encoder_registry[config['net_class']]
-    batch_size = config['batch_size']
+# Datasets and loaders
+train_dataset = datasets.MNIST(root="data", train=True, transform=transform, download=True)
+test_dataset = datasets.MNIST(root="data", train=False, transform=transform, download=True)
+train_loader = DataLoader(dataset=train_dataset, batch_size=batch_size, shuffle=True)
+test_loader = DataLoader(dataset=test_dataset, batch_size=batch_size, shuffle=False)
 
-    return net_class, dir_name, (optimizer, lr, wd, momentum), (scheduler, epochs), batch_size
+# Neural network model
+class SimpleNN(nn.Module):
+    def __init__(self):
+        super(SimpleNN, self).__init__()
+        self.fc1 = nn.Linear(28 * 28, 128)
+        self.fc2 = nn.Linear(128, 64)
+        self.fc3 = nn.Linear(64, 10)
 
+    def forward(self, x):
+        x = x.view(-1, 28 * 28)
+        x = torch.relu(self.fc1(x))
+        x = torch.relu(self.fc2(x))
+        x = self.fc3(x)
+        return x
 
-def main(_):
-    torch.set_num_threads(2)
-    torch.manual_seed(0)
+# Initialize model, criterion, and optimizer
+model = SimpleNN().to(device)
+criterion = nn.CrossEntropyLoss()
+optimizer = optim.Adam(model.parameters(), lr=learning_rate)
 
-    print(f"Running: {FLAGS.exp_name} with encoder {FLAGS.encoder}")
+# Training loop
+for epoch in range(num_epochs):
+    model.train()
+    running_loss = 0.0
+    for images, labels in train_loader:
+        images, labels = images.to(device), labels.to(device)
+        optimizer.zero_grad()
+        outputs = model(images)
+        loss = criterion(outputs, labels)
+        loss.backward()
+        optimizer.step()
+        running_loss += loss.item()
+    
+    # Log training loss to TensorBoard
+    writer.add_scalar("Training Loss", running_loss / len(train_loader), epoch)
+    print(f"Epoch [{epoch+1}/{num_epochs}], Loss: {running_loss/len(train_loader):.4f}")
 
-    net_class, dir_name, \
-        (optimizer, lr, wd, momentum), \
-        (scheduler, epochs), batch_size = \
-        get_config(FLAGS.exp_name, FLAGS.encoder)
+# Evaluation and saving test predictions
+model.eval()
+correct = 0
+total = 0
+predictions = []
+with torch.no_grad():
+    for images, labels in test_loader:
+        images, labels = images.to(device), labels.to(device)
+        outputs = model(images)
+        _, predicted = torch.max(outputs.data, 1)
+        total += labels.size(0)
+        correct += (predicted == labels).sum().item()
 
-    train_data = get_flower102(FLAGS.data_dir,'train')
-    val_data = get_flower102(FLAGS.data_dir,'val')
-    test_data = get_flower102(FLAGS.data_dir,'test')
+        # Collect predictions and true labels
+        predictions.extend(zip(predicted.cpu().numpy(), labels.cpu().numpy()))
 
-    train_dataloader = DataLoader(train_data, batch_size=batch_size, shuffle=True)
-    val_dataloader = DataLoader(val_data, batch_size=batch_size, shuffle=False)
+# Calculate accuracy and log to TensorBoard
+accuracy = 100 * correct / total
+print(f"Test Accuracy: {accuracy:.2f}%")
+writer.add_scalar("Test Accuracy", accuracy)
+writer.close()
 
-    tmp_file_name = dir_name + '/best_model.pth'
-    device = torch.device('cuda:0')
+# Save test predictions to file
+predictions_file = os.path.join(output_dir, "test_predictions.txt")
+with open(predictions_file, "w") as f:
+    for pred, true_label in predictions:
+        f.write(f"Predicted: {pred}, True Label: {true_label}\n")
 
-    writer = SummaryWriter(f'{dir_name}/lr{lr:0.6f}_wd{wd:0.6f}', flush_secs=10)
-
-    model = net_class(102, FLAGS.encoder)
-    model.to(device)
-
-    trainer = Trainer(model, train_dataloader, val_dataloader, writer,
-                      optimizer=optimizer, lr=lr, wd=wd, momentum=momentum,
-                      scheduler=scheduler, epochs=epochs,
-                      device=device)
-
-    best_val_acc, best_epoch = trainer.train(model_file_name=tmp_file_name)
-    print(f"lr: {lr:0.7f}, wd: {wd:0.7f}, best_val_acc: {best_val_acc}, best_epoch: {best_epoch}")
-
-    print("Training complete")
-
-    test_dataloader = DataLoader(test_data, batch_size=batch_size, shuffle=False)
-    model.load_state_dict(torch.load(f'{dir_name}/best_model.pth'))
-    inference(test_dataloader, model, device, result_path=dir_name + '/test_predictions.txt')
-
-
-if __name__ == '__main__':
-    app.run(main)
+print(f"Test predictions saved to {predictions_file}")
